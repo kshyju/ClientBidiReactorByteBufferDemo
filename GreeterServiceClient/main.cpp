@@ -24,7 +24,7 @@ int main()
 	std::shared_ptr<Channel> channel = grpc::CreateChannel(endpoint, grpc::InsecureChannelCredentials());
 	
 
-	GrpcWorker2 worker(channel);
+	GrpcWorker1 worker(channel);
 
 	Status status = worker.Await();
 

@@ -20,16 +20,15 @@ using grpc::Status;
 using mygreeterapp::GreeterMessage;
 using mygreeterapp::GreeterService;
 
-class GrpcWorker1 : public grpc::ClientBidiReactor<GreeterMessage, GreeterMessage> {
+class GrpcWorker3 : public grpc::ClientBidiReactor<GreeterMessage, GreeterMessage> {
 public:
-	explicit GrpcWorker1(std::shared_ptr<Channel> channel) {
+	explicit GrpcWorker3(std::shared_ptr<Channel> channel) {
 
-		stub_ = GreeterService::NewStub(channel);
+		std::unique_ptr<GreeterService::Stub> stub_(GreeterService::NewStub(channel));
 		stub_.get()->async()->GreetStream(&context_, this);
 
 		GreeterMessage* msg = new GreeterMessage();
 		msg->set_message("Start");
-		//AddHold();
 		StartWrite(msg);
 
 		StartRead(&messageFromServer_);
@@ -43,21 +42,43 @@ public:
 	void OnReadDone(bool ok) override {
 		std::cout << "DEBUG:OnReadDone:" << ok << std::endl;
 		if (ok) {
-			std::cout << "DEBUG:message:" << messageFromServer_.message() << std::endl;
-			std::unique_ptr<GreeterMessage> msg = std::make_unique<GreeterMessage>();
-			msg->set_message("Response for " + messageFromServer_.message());
-			StartWrite(msg.get());
-			//StartWrite(msg.get());
 
+			std::cout << "DEBUG:message:" << messageFromServer_.message() << std::endl;
+
+			if (messageFromServer_.message() == "InitRequest")
+			{
+				std::unique_ptr<GreeterMessage> msg1 = std::make_unique<GreeterMessage>();
+				msg1->set_message("InitResponse");
+
+				std::unique_ptr<GreeterMessage> msg = std::make_unique<GreeterMessage>();
+				msg->set_message("MetaResponse");
+
+				StartWrite(msg.get());
+				StartWrite(msg1.get());
+			}
+			else if (messageFromServer_.message() == "MetaRequest")
+			{
+				std::unique_ptr<GreeterMessage> msg = std::make_unique<GreeterMessage>();
+				msg->set_message("MetaResponse");
+				StartWrite(msg.get());
+				StartSafeWrite(msg.get());
+			}
+			else
+			{
+			}
 			StartRead(&messageFromServer_);
 		}
-		//StartRead(&messageFromServer_);
 		// if false, we should Ideally explicitly close by calling Finish?
 	}
 
+	void StartSafeWrite(const GreeterMessage* msg)
+	{
+		StartWrite(msg);
+
+		outstandingWrites++;
+	}
 
 	void OnDone(const Status& s) override {
-		std::cout << "DEBUG:OnDone:" << s.error_message() << std::endl;
 		std::unique_lock<std::mutex> l(mu_);
 		status_ = s;
 		done_ = true;
@@ -70,18 +91,21 @@ public:
 		return std::move(status_);
 	}
 
+
 private:
 	ClientContext context_;
-	std::unique_ptr<GreeterService::Stub> stub_;
+
 	// Every single read will use this instance.
 	//  There can only be one outstanding read or write at a given time on a given
 	//  stream, but reads and writes can happen in parallel.
 	//  https://groups.google.com/g/grpc-io/c/T2x2kVxnPWk/m/ane8aRJIAwAJ
-	mygreeterapp::GreeterMessage read_;
-	mygreeterapp::GreeterMessage write_;
-
+	mygreeterapp::GreeterMessage messageFromServer_;
 	std::mutex mu_;
 	std::condition_variable cv_;
 	Status status_;
 	bool done_ = false;
+
+	int outstandingWrites = 0;
+	std::mutex outstandingWriteCountMutex_;
+	std::condition_variable cv2_;
 };
