@@ -1,7 +1,7 @@
 ﻿# CMakeList.txt : Top-level CMake project file, do global configuration
 # and include sub-projects here.
 #
-cmake_minimum_required (VERSION 3.18)
+cmake_minimum_required (VERSION 3.23)
 
 
 include(FetchContent)
@@ -17,8 +17,11 @@ set(CMAKE_TOOLCHAIN_FILE "${vcpkg_SOURCE_DIR}/scripts/buildsystems/vcpkg.cmake" 
 
 project ("GreeterServiceClient")
 
+set(CMAKE_CXX_STANDARD 20)
+
 # Include sub-projects.
 add_subdirectory ("GreeterServiceClient")
 add_subdirectory("Protos")
+
 
 

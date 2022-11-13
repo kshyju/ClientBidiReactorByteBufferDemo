@@ -1,111 +1,113 @@
-#include <grpc/grpc.h>
-#include <grpcpp/channel.h>
-#include <grpcpp/client_context.h>
-#include <grpcpp/create_channel.h>
-#include "greetermessage.pb.h"
-#include "greetermessage.grpc.pb.h"
-#include <condition_variable>
-
-#include <chrono>
+#include "my_async_worker3.h"
+#include "spdlog/spdlog.h"
+#include <thread>
 #include <iostream>
 #include <memory>
 #include <mutex>
-#include <random>
-#include <string>
-#include <thread>
+#include <future>
 
-using grpc::Channel;
-using grpc::ClientContext;
-using grpc::Status;
-using mygreeterapp::GreeterMessage;
-using mygreeterapp::GreeterService;
+AsyncWorker3::AsyncWorker3(std::shared_ptr<Channel> channel)
+{
+	std::unique_ptr<GreeterService::Stub> stub_(GreeterService::NewStub(channel));
+	stub_.get()->async()->GreetStream(&client_context_, this);
 
-class GrpcWorker3 : public grpc::ClientBidiReactor<GreeterMessage, GreeterMessage> {
-public:
-	explicit GrpcWorker3(std::shared_ptr<Channel> channel) {
+	write_.set_message("Start");
+	StartWrite(&write_);
+	StartRead(&read_);
+	StartCall();
+}
 
-		std::unique_ptr<GreeterService::Stub> stub_(GreeterService::NewStub(channel));
-		stub_.get()->async()->GreetStream(&context_, this);
+void AsyncWorker3::OnWriteDone(bool ok)
+{
+	SPDLOG_INFO("OnWriteDone");		
+}
 
-		GreeterMessage* msg = new GreeterMessage();
-		msg->set_message("Start");
-		StartWrite(msg);
+void AsyncWorker3::OnWritesDoneDone(bool ok)
+{
+}
 
-		StartRead(&messageFromServer_);
-		StartCall();
+void AsyncWorker3::processMessage(GreeterMessage msg)
+{
+	SPDLOG_INFO("processMessage processing copy. {}", msg.message());
+	auto ms = msg.message();
+	GreeterMessage response;
+	response.set_message("Client response for-" + ms);
+	//write(response);
+	SPDLOG_INFO("Writing client response {}", response.message());
+	StartWrite(&response);
+}
+
+void AsyncWorker3::OnReadDone(bool ok)
+{
+	SPDLOG_INFO("OnReadDone. ok={}", ok);
+	if (!ok) {
+		SPDLOG_WARN("Failed to read response");
+		return;
 	}
 
-	void OnWriteDone(bool ok) override {
-		std::cout << "DEBUG:OnWriteDone:" << ok << std::endl;
+	SPDLOG_DEBUG("OnReadDone OK");
+	
+	SPDLOG_INFO("New message received fro srvr. {}", read_.message());
+	GreeterMessage copy(read_);
+	auto f = std::async(std::launch::async, [this, &copy]() {
+		processMessage(copy);
+	});
+	
+	StartRead(&read_);;
+}
+
+void AsyncWorker3::OnDone(const grpc::Status& status)
+{
+	SPDLOG_DEBUG("OnDone. status.code={}, status.message={}", status.error_code(), status.error_message());
+
+	if (status.ok()) {
+		SPDLOG_DEBUG("Bi-directional stream ended. status.code={}, status.message={}", status.error_code(), status.error_message());
 	}
 
-	void OnReadDone(bool ok) override {
-		std::cout << "DEBUG:OnReadDone:" << ok << std::endl;
-		if (ok) {
+	std::unique_lock<std::mutex> l(mu_);
+	status_ = status;
+	done_ = true;
+	cv_.notify_one();
+}
 
-			std::cout << "DEBUG:message:" << messageFromServer_.message() << std::endl;
 
-			if (messageFromServer_.message() == "InitRequest")
-			{
-				std::unique_ptr<GreeterMessage> msg1 = std::make_unique<GreeterMessage>();
-				msg1->set_message("InitResponse");
 
-				std::unique_ptr<GreeterMessage> msg = std::make_unique<GreeterMessage>();
-				msg->set_message("MetaResponse");
+void AsyncWorker3::fireRead()
+{
+	//StartRead(&read_);
+}
 
-				StartWrite(msg.get());
-				StartWrite(msg1.get());
-			}
-			else if (messageFromServer_.message() == "MetaRequest")
-			{
-				std::unique_ptr<GreeterMessage> msg = std::make_unique<GreeterMessage>();
-				msg->set_message("MetaResponse");
-				StartWrite(msg.get());
-				StartSafeWrite(msg.get());
-			}
-			else
-			{
-			}
-			StartRead(&messageFromServer_);
-		}
-		// if false, we should Ideally explicitly close by calling Finish?
-	}
-
-	void StartSafeWrite(const GreeterMessage* msg)
+void AsyncWorker3::fireWrite()
+{
 	{
-		StartWrite(msg);
-
-		outstandingWrites++;
+		absl::MutexLock lk(&writes_mtx_);
+		if (writes_.empty()) {
+			std::cout << "No message to write" << std::endl;
+			return;
+		}
 	}
+	std::cout << "fireWrite. Writing " << write_.DebugString() << std::endl;
+	StartWrite(&write_);
+}
 
-	void OnDone(const Status& s) override {
-		std::unique_lock<std::mutex> l(mu_);
-		status_ = s;
-		done_ = true;
-		cv_.notify_one();
+void AsyncWorker3::fireClose()
+{
+}
+
+void AsyncWorker3::write(GreeterMessage message)
+{
+	{
+		absl::MutexLock lk(&writes_mtx_);
+		writes_.push_back(message);
 	}
+	fireWrite();
+}
 
-	Status Await() {
-		std::unique_lock<std::mutex> l(mu_);
-		cv_.wait(l, [this] { return done_; });
-		return std::move(status_);
-	}
+Status AsyncWorker3::await()
+{
+	std::unique_lock<std::mutex> l(mu_);
+	cv_.wait(l, [this] { return done_; });
+	return std::move(status_);
+}
 
 
-private:
-	ClientContext context_;
-
-	// Every single read will use this instance.
-	//  There can only be one outstanding read or write at a given time on a given
-	//  stream, but reads and writes can happen in parallel.
-	//  https://groups.google.com/g/grpc-io/c/T2x2kVxnPWk/m/ane8aRJIAwAJ
-	mygreeterapp::GreeterMessage messageFromServer_;
-	std::mutex mu_;
-	std::condition_variable cv_;
-	Status status_;
-	bool done_ = false;
-
-	int outstandingWrites = 0;
-	std::mutex outstandingWriteCountMutex_;
-	std::condition_variable cv2_;
-};

@@ -20,7 +20,6 @@ target_link_libraries(func_protos
         gRPC::grpc++
 )
 
-
 target_include_directories(func_protos PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 
 #
